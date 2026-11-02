@@ -40,8 +40,8 @@ async def _call_gemini(text: str) -> Optional[Dict[str, Any]]:
         '  "tat": "<turnaround time string, e.g. 24h, 2d, 1h>",\n'
         '  "conditions": "<terms, rules or TOS channel link, or \'None\'>",\n'
         '  "amount": "<numeric amount, e.g. 500, 1500.5>",\n'
-        '  "currency": "<INR, USD, USDT, etc.>",\n'
-        '  "payment_network": "<UPI, Crypto network like TRC20, or \'UPI\'>"\n'
+        '  "currency": "<INR, USD, USDT, BTC, ETH, SOL, TON, or Crypto>",\n'
+        '  "payment_network": "<UPI, or Crypto network like TRC20, BEP20, etc.>"\n'
         "}\n\n"
         f"Input text:\n{text}"
     )
@@ -125,27 +125,87 @@ def _parse_locally(text: str) -> Optional[Dict[str, Any]]:
     if not deal_type or not amount:
         return None
 
-    # Determine if payment network or currency suggests crypto or UPI
-    comb = f"{currency} {network}".lower()
-    if any(c in comb for c in ("crypto", "usdt", "trc", "bep", "erc", "ton", "sol", "btc", "eth")):
-        if currency.upper() in ("INR", "₹"):
-            currency = "USDT"
-        if network.upper() == "UPI":
-            network = "Crypto"
-    elif any(u in comb for u in ("upi", "inr", "gpay", "paytm", "phonepe")):
-        currency = "INR"
-        network = "UPI"
-
     out = {
         "deal_type": deal_type[:200],
         "tat": tat_str,
         "conditions": conditions[:300] if conditions else "None",
         "amount": amount,
-        "currency": currency.upper() if len(currency) <= 6 else currency,
+        "currency": currency,
         "payment_network": network,
     }
     _normalize_fields(out)
     return out
+
+
+def normalize_currency_and_network(currency_raw: str, network_raw: str):
+    """Normalize currency and payment network strings into standard representations."""
+    c = (currency_raw or "").strip()
+    n = (network_raw or "").strip()
+
+    c_low = c.lower()
+    n_low = n.lower()
+
+    # Network detection from both fields
+    detected_net = None
+    if any(k in n_low or k in c_low for k in ("trc20", "trc-20", "trc")):
+        detected_net = "TRC-20"
+    elif any(k in n_low or k in c_low for k in ("bep20", "bep-20", "bep", "bsc")):
+        detected_net = "BEP-20"
+    elif any(k in n_low or k in c_low for k in ("erc20", "erc-20", "erc")):
+        detected_net = "ERC-20"
+    elif any(k in n_low or k in c_low for k in ("ton mainnet", "ton network", "ton")):
+        detected_net = "TON"
+    elif any(k in n_low or k in c_low for k in ("solana", "sol mainnet", "spl")):
+        detected_net = "SOL"
+    elif any(k in n_low or k in c_low for k in ("upi", "gpay", "paytm", "phonepe")):
+        detected_net = "UPI"
+    elif any(k in n_low for k in ("bitcoin", "btc", "ethereum", "eth", "crypto", "blockchain")):
+        detected_net = "Crypto"
+
+    # Currency normalization
+    norm_cur = "INR"
+    if any(k in c_low for k in ("usdt", "tether", "usd-t")) or ("usdt" in n_low and "inr" not in c_low):
+        norm_cur = "USDT"
+    elif any(k in c_low for k in ("btc", "bitcoin")):
+        norm_cur = "BTC"
+    elif any(k in c_low for k in ("eth", "ethereum")):
+        norm_cur = "ETH"
+    elif any(k in c_low for k in ("sol", "solana")) and "usdt" not in c_low:
+        norm_cur = "SOL"
+    elif any(k in c_low for k in ("ton", "toncoin")) and "usdt" not in c_low:
+        norm_cur = "TON"
+    elif any(k in c_low for k in ("ltc", "litecoin")):
+        norm_cur = "LTC"
+    elif any(k in c_low for k in ("trx", "tron")) and "usdt" not in c_low and "trc" not in c_low:
+        norm_cur = "TRX"
+    elif any(k in c_low for k in ("bnb", "binance")) and "usdt" not in c_low:
+        norm_cur = "BNB"
+    elif any(k in c_low for k in ("xrp", "ripple")):
+        norm_cur = "XRP"
+    elif any(k in c_low for k in ("doge", "dogecoin")):
+        norm_cur = "DOGE"
+    elif any(k in c_low for k in ("matic", "polygon", "pol")):
+        norm_cur = "POL"
+    elif any(k in c_low for k in ("usd", "$", "dollar")) and "usdt" not in c_low:
+        norm_cur = "USD"
+    elif "crypto" in c_low or "crypto" in n_low:
+        norm_cur = "Crypto"
+    elif any(k in c_low for k in ("inr", "₹", "rs", "rupee", "rupees")):
+        norm_cur = "INR"
+    elif c:
+        norm_cur = c.upper() if len(c) <= 6 else c
+
+    # Finalize network
+    if norm_cur == "INR":
+        norm_net = "UPI"
+    elif detected_net:
+        norm_net = detected_net
+    elif n:
+        norm_net = n
+    else:
+        norm_net = "Crypto" if norm_cur in ("USDT", "BTC", "ETH", "SOL", "TON", "Crypto") else "UPI"
+
+    return norm_cur, norm_net
 
 
 def _normalize_fields(d: Dict[str, Any]):
@@ -158,3 +218,6 @@ def _normalize_fields(d: Dict[str, Any]):
     d["amount"] = str(d.get("amount", "0")).replace(",", "").strip()
     if not d.get("conditions"):
         d["conditions"] = "None"
+    cur, net = normalize_currency_and_network(d.get("currency", "INR"), d.get("payment_network", "UPI"))
+    d["currency"] = cur
+    d["payment_network"] = net

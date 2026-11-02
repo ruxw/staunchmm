@@ -36,7 +36,7 @@ class GroupInfo:
 async def start():
     global client, mm_user_id
     client = TelegramClient(StringSession(config.SESSION_STRING), config.API_ID, config.API_HASH)
-    await client.connect()
+    await asyncio.wait_for(client.connect(), timeout=25)
     if not await client.is_user_authorized():
         raise RuntimeError("SESSION_STRING is invalid/expired. Generate a new one with gen_session.py")
     me = await client.get_me()
@@ -179,7 +179,7 @@ async def _handle_instant_mm(event, other_id: int, bot_username: str):
 
         deal_no = await db.next_deal_no()
         label = f"#{config.DEAL_ID_PREFIX}{deal_no}"
-        gc_title = settings.render_gc_title(label, "Buyer", "Seller")
+        gc_title = settings.render_gc_title(label, "Buyer", "Seller", deal_no=deal_no)
 
         info = await create_deal_group(gc_title, bot_username, invite_users=[other_ent])
 

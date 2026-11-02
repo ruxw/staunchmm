@@ -4,6 +4,10 @@ Telegram middleman bot: `/start`, `/deal`, `/deals`, `/mm`, `/livechat`, `/setti
 Stack: python-telegram-bot 22 · Telethon (middleman userbot session) · MongoDB (motor) · AI / NLP parsing. Python 3.11+.
 
 ## New Features
+- **GC Appearance Configuration**: Middleman can configure both GC naming style and GC profile photo directly in `/settings -> GC Appearance`. Upload any photo to the bot to automatically apply it to all newly created deal supergroups. Supports custom sequential deal numbering (`Deal #{startno} | @{mm}`).
+- **Redesigned Payment Flow**: Streamlined, unified payment cards. For INR: one consolidated card with amount, fee, and UPI ID, followed by the confirmation button after a 3-second delay. For Crypto: interactive network selection first, which updates in-place with deposit address instructions, followed by the payment confirmation button after 3 seconds.
+- **Currency & Network Normalization**: Automatic NLP normalization for INR, USDT (TRC-20, BEP-20, ERC-20, TON, SOL), BTC, ETH, SOL, TON, and 25+ cryptocurrency networks.
+- **Sponsored Advertisement System (`/ad`)**: Middleman can configure a sponsored ad footer with Telegram custom emojis. The bot automatically appends it to outgoing messages (`— "..."`) via centralized `EmojiBot` interception. Includes set, replace, preview, enable, and disable controls.
 - **Direct Live Chat (`/livechat`)**: Allows restricted/limited Telegram accounts to chat with the middleman directly through the bot. Middleman can reply directly by swiping/replying to the bot's relayed message or via `/reply`.
 - **Admin Dashboard (`/settings`)**: Interactive middleman dashboard to configure Official Channel, Vouch Channel, TOS Channel, UPI ID, 25+ Crypto Wallets, GC Name templates, and Vouch format.
 - **Active `/stats`**: Real-time monitoring of deals, registered users, daily growth, active TATs, and system health.

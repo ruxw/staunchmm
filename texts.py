@@ -202,6 +202,16 @@ def payment_details_crypto_prompt(amount: str, currency: str, fee: str) -> str:
     )
 
 
+def payment_details_crypto_address(coin_name: str, symbol: str, network: str, address: str) -> str:
+    return (
+        f"{emojis.EMOJI_COIN} <b>Selected Crypto:</b> {esc(coin_name)} ({esc(symbol)})\n"
+        f"🌐 <b>Network:</b> <code>{esc(network)}</code>\n\n"
+        f"📥 <b>Deposit Address:</b>\n<code>{esc(address)}</code>\n\n"
+        f"{emojis.EMOJI_WARNING} <i>Send payment to only this network.</i>\n"
+        f"{emojis.EMOJI_MEMO} <i>Send transaction hash or screenshot right after paying.</i>"
+    )
+
+
 def payment_verification_text(buyer_tag: str) -> str:
     return (
         f"{emojis.EMOJI_POINT} {buyer_tag} — have you sent the payment?\n\n"

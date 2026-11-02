@@ -61,6 +61,20 @@ async def _dm_mm(bot, text) -> bool:
         return False
 
 
+async def apply_gc_photo(bot, chat_id: int):
+    """Applies the configured GC profile photo to a newly created deal group."""
+    file_id = settings.get("gc_photo_file_id")
+    if not file_id:
+        return
+    try:
+        f = await bot.get_file(file_id)
+        photo_bytes = await f.download_as_bytearray()
+        await bot.set_chat_photo(chat_id=chat_id, photo=bytes(photo_bytes))
+        log.info("Applied GC profile photo to chat %s", chat_id)
+    except Exception as e:
+        log.warning("Could not set GC photo for chat %s: %s", chat_id, e)
+
+
 async def finalize_deal(app, deal):
     bot = app.bot
     label = texts.deal_label(deal)
@@ -71,8 +85,10 @@ async def finalize_deal(app, deal):
             deal.get("buyer_username") or "Buyer",
             deal.get("seller_username") or "Seller",
             deal.get("amount") or "",
+            deal_no=deal.get("deal_no"),
         )
         info = await userbot.create_deal_group(gc_title, bot.username)
+        await apply_gc_photo(bot, info.chat_id)
 
         deadline = utcnow() + timedelta(seconds=deal["tat_seconds"])
         deal["tat_deadline"] = deadline
@@ -118,6 +134,9 @@ async def finalize_deal(app, deal):
 async def init_instant_deal_room(app, deal):
     bot = app.bot
     chat_id = deal["group_chat_id"]
+
+    # Apply configured GC profile photo if available
+    await apply_gc_photo(bot, chat_id)
 
     # Message 1: Welcome
     m1 = settings.render_template("deal_creation")

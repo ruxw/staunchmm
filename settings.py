@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 import config
 import emojis
-from utils import safe_format
+from utils import get_currency_symbol, safe_format
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ GC_NAME_PRESETS = [
     "🤝 {label} • @{buyer} x @{seller}",
     "🛡️ Escrow {label} | @{mm}",
     "Deal {label} ({amount}) | @{mm}",
+    "Deal #{startno} | @{mm}",
 ]
 
 # Configurable Message Templates with Sensible Defaults
@@ -94,15 +95,7 @@ DEFAULT_TEMPLATES: Dict[str, str] = {
         "This deal has been formally closed by Middleman @{mm}.\n"
         "Participants have been muted and invitations revoked."
     ),
-    "vouch": (
-        f"{emojis.EMOJI_VOUCH} <b>Vouch for @{{mm}}</b>\n\n"
-        f"{emojis.EMOJI_DOC} <b>Deal:</b> {{deal_type}}\n"
-        f"{emojis.EMOJI_MONEY} <b>Amount:</b> {{amount}} {{currency}}\n"
-        f"{emojis.EMOJI_BUYER} <b>Buyer:</b> {{buyer}}\n"
-        f"{emojis.EMOJI_SELLER} <b>Seller:</b> {{seller}}\n"
-        f"{emojis.EMOJI_SUCCESS} <b>Status:</b> Completed Successfully\n\n"
-        f"{emojis.EMOJI_CHANNEL} <b>Vouch Channel:</b> {{vouch_channel}}"
-    ),
+    "vouch": "Vouch @{mm} for MM'd {amount} {currency}",
 }
 
 TEMPLATE_LABELS: Dict[str, str] = {
@@ -130,8 +123,12 @@ def _get_defaults() -> Dict[str, Any]:
         "upi_name": f"{config.MM_USERNAME} Escrow",
         "default_fee": config.DEFAULT_MM_FEE,
         "gc_name_template": GC_NAME_PRESETS[0],
+        "gc_photo_file_id": None,
+        "gc_start_num": None,
+        "gc_baseline_deal_no": None,
         "templates": dict(DEFAULT_TEMPLATES),
         "crypto_wallets": {},
+        "active_ad": {"text": "", "enabled": False},
     }
 
 
@@ -150,6 +147,10 @@ async def init_settings():
             # Deep merge templates
             saved_templates = dict(defaults.get("templates", {}))
             if "templates" in doc and isinstance(doc["templates"], dict):
+                # Upgrade old multi-line template to concise format if not custom-edited
+                old_vouch = doc["templates"].get("vouch", "")
+                if "Vouch Channel:" in old_vouch or "Completed Successfully" in old_vouch:
+                    doc["templates"]["vouch"] = DEFAULT_TEMPLATES["vouch"]
                 saved_templates.update(doc["templates"])
             merged["templates"] = saved_templates
             _cache.update(merged)
@@ -175,6 +176,16 @@ async def set_setting(key: str, value: Any):
         )
     except Exception as e:
         log.error("Failed to persist setting '%s': %s", key, e)
+
+
+# ---------------------------------------------------------------- Advertisements
+def get_ad() -> Dict[str, Any]:
+    return _cache.get("active_ad") or {"text": "", "enabled": False}
+
+
+async def set_ad(text: str, enabled: bool = True):
+    val = {"text": (text or "").strip(), "enabled": bool(enabled)}
+    await set_setting("active_ad", val)
 
 
 # ---------------------------------------------------------------- Templates
@@ -236,25 +247,61 @@ def get_crypto_wallet(coin_key: str) -> str:
 
 
 # ---------------------------------------------------------------- Helpers
-def render_gc_title(label: str, buyer: str = "Buyer", seller: str = "Seller", amount: str = "") -> str:
+def render_gc_title(
+    label: str = "",
+    buyer: str = "Buyer",
+    seller: str = "Seller",
+    amount: str = "",
+    deal_no: Any = None,
+    **kwargs,
+) -> str:
+    import re
     tmpl = get("gc_name_template", GC_NAME_PRESETS[0])
-    title = tmpl.format(
-        label=label,
+
+    # Determine internal deal_no
+    internal_no = None
+    if isinstance(deal_no, int):
+        internal_no = deal_no
+    elif isinstance(deal_no, str) and deal_no.isdigit():
+        internal_no = int(deal_no)
+    elif label:
+        m = re.search(r"\d+", label)
+        if m:
+            internal_no = int(m.group(0))
+
+    start_num = get("gc_start_num")
+    baseline = get("gc_baseline_deal_no")
+    if start_num is not None and baseline is not None and internal_no is not None:
+        diff = max(0, internal_no - baseline)
+        display_num = start_num + diff
+    else:
+        display_num = internal_no if internal_no is not None else 1
+
+    title = safe_format(
+        tmpl,
+        label=label or f"#{internal_no or 1}",
         mm=config.MM_USERNAME,
         buyer=buyer.lstrip("@"),
         seller=seller.lstrip("@"),
         amount=amount,
+        startno=display_num,
+        **kwargs,
     )
     return title[:120]
 
 
 def render_vouch(deal: dict) -> str:
+    amt = str(deal.get("amount", "0"))
+    curr = str(deal.get("currency") or "").strip()
     return render_template(
         "vouch",
+        deal_id=str(deal.get("deal_no", "")),
         deal_type=deal.get("purpose") or deal.get("deal_type") or "P2P Deal",
-        amount=deal.get("amount", "N/A"),
-        currency=deal.get("currency", ""),
-        buyer=deal.get("buyer_username", "Anonymous"),
-        seller=deal.get("seller_username", "Anonymous"),
+        amount=amt,
+        currency=curr,
+        curr_sym=get_currency_symbol(curr or "$"),
+        buyer=deal.get("buyer_username") or "Anonymous",
+        seller=deal.get("seller_username") or "Anonymous",
         vouch_channel=get("vouch_channel_url", config.CHANNEL_URL),
+        mm=config.MM_USERNAME,
     )

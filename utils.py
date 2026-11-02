@@ -137,3 +137,27 @@ def safe_format(template: str, **kwargs) -> str:
         for k, v in kwargs.items():
             out = out.replace(f"{{{k}}}", str(v))
         return out
+
+
+def parse_channel_target(val: str):
+    """Extracts a valid Telegram chat target from URL, @username, or chat ID.
+    Examples:
+    'https://t.me/Proofinity' -> '@Proofinity'
+    '@Proofinity' -> '@Proofinity'
+    '-100123456789' -> -100123456789
+    """
+    if not val:
+        return None
+    val = str(val).strip()
+    if val.startswith("-") and val[1:].isdigit():
+        return int(val)
+    if val.isdigit():
+        return int(val)
+    if val.startswith("@"):
+        return val
+    m = re.search(r"(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z0-9_]{4,})", val)
+    if m:
+        name = m.group(1)
+        if name not in ("joinchat", "c"):
+            return f"@{name}"
+    return val

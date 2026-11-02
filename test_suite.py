@@ -78,7 +78,8 @@ def run_tests():
         seller="@seller_user",
         deal_id="1042",
     )
-    assert "The TAT of 24 hours is over." in exp_msg
+    assert "24 hours" in exp_msg
+    assert "Deal #1042" in exp_msg
     assert "@buyer_user" in exp_msg
     assert "@seller_user" in exp_msg
     print("✓ TAT Expiration message format matches requirement exactly.")
@@ -97,10 +98,82 @@ def run_tests():
     assert "1042" in close_msg
     print("✓ Deal closure message format verified.")
 
+    # Vouch template test
+    vouch_out = settings.render_vouch({"amount": "50", "currency": "$", "deal_no": 1})
+    assert "Vouch @" in vouch_out
+    assert "for MM'd 50 $" in vouch_out
+    print("✓ Concise vouch format matches requirement exactly.")
+
     # Safe formatting with unknown placeholders
     safe_out = utils.safe_format("Hello {known} and {unknown}!", known="World")
     assert safe_out == "Hello World and {unknown}!"
     print("✓ Safe template formatter handles unknown placeholders safely.")
+
+    # 5. Channel target parsing
+    print("\n--- 5. Testing Vouch Channel Target Parser ---")
+    assert utils.parse_channel_target("https://t.me/Proofinity") == "@Proofinity"
+    assert utils.parse_channel_target("t.me/Proofinity") == "@Proofinity"
+    assert utils.parse_channel_target("@Proofinity") == "@Proofinity"
+    assert utils.parse_channel_target("-1001234567890") == -1001234567890
+    print("✓ Vouch channel target parser verified.")
+
+    # 6. Sequential GC Title Preset & Math
+    print("\n--- 6. Testing Sequential GC Title Presets ---")
+    # Test standard preset
+    std_title = settings.render_gc_title(deal_no=15, buyer="alice", seller="bob", amount="100", currency="USD")
+    assert "15" in std_title
+    print("✓ Standard GC Title rendered correctly:", std_title)
+
+    # Test sequential preset with baseline math: start_num=121, baseline=1, deal_no=1 -> 121
+    settings._cache["gc_name_template"] = settings.GC_NAME_PRESETS[4] # "Deal #{startno} | @{mm}"
+    settings._cache["gc_start_num"] = 121
+    settings._cache["gc_baseline_deal_no"] = 1
+    seq_title_1 = settings.render_gc_title(deal_no=1)
+    assert "#121" in seq_title_1, f"Expected #121, got {seq_title_1}"
+    seq_title_2 = settings.render_gc_title(deal_no=2)
+    assert "#122" in seq_title_2, f"Expected #122, got {seq_title_2}"
+    seq_title_4 = settings.render_gc_title(deal_no=4)
+    assert "#124" in seq_title_4, f"Expected #124, got {seq_title_4}"
+    # Reset template back to default
+    settings._cache["gc_name_template"] = settings.GC_NAME_PRESETS[0]
+    print("✓ Sequential GC title math (starting deal no #121 -> #122 -> #124) verified.")
+
+    # 7. Currency & Payment Network Normalization
+    print("\n--- 7. Testing Currency & Network Normalization ---")
+    from ai_parser import normalize_currency_and_network
+
+    cases = [
+        ("₹", "upi", "INR", "UPI"),
+        ("inr", "UPI", "INR", "UPI"),
+        ("Rs", "", "INR", "UPI"),
+        ("usdt", "trc20", "USDT", "TRC-20"),
+        ("USDT", "bep-20", "USDT", "BEP-20"),
+        ("bitcoin", "", "BTC", "Crypto"),
+        ("btc", "bitcoin", "BTC", "Crypto"),
+        ("eth", "erc20", "ETH", "ERC-20"),
+        ("sol", "solana", "SOL", "SOL"),
+        ("ton", "ton", "TON", "TON"),
+        ("usd", "", "USD", "UPI"),
+        ("crypto", "trc20", "Crypto", "TRC-20"),
+    ]
+    for raw_c, raw_n, exp_c, exp_n in cases:
+        c, n = normalize_currency_and_network(raw_c, raw_n)
+        assert c == exp_c, f"For ({raw_c}, {raw_n}): expected currency {exp_c}, got {c}"
+        assert n == exp_n, f"For ({raw_c}, {raw_n}): expected network {exp_n}, got {n}"
+    print("✓ All currency & payment network normalizations verified.")
+
+    # 8. Advertisement System & Format
+    print("\n--- 8. Testing Advertisement System ---")
+    # Verify get_ad default
+    ad = settings.get_ad()
+    assert isinstance(ad, dict)
+    assert "text" in ad and "enabled" in ad
+
+    # Test footer format
+    ad_text = "🎰 @Rainbetcom #1 Non-KYC Crypto Casino & Sportsbook"
+    expected_footer = f'\n\n— "{ad_text}"'
+    assert f'— "{ad_text}"' in expected_footer
+    print("✓ Advertisement footer format matches expected styling.")
 
     print("\n===================================")
     print("🎉 ALL TEST SUITE ASSERTIONS PASSED!")

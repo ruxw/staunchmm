@@ -137,6 +137,14 @@ async def delete_session(uid: int):
 
 
 # ---------------------------------------------------------------- deals
+async def get_current_deal_no() -> int:
+    """Returns the current deal counter sequence without incrementing."""
+    if counters is None:
+        return 0
+    doc = await counters.find_one({"_id": "deal"})
+    return int(doc["seq"]) if doc and "seq" in doc else 0
+
+
 async def next_deal_no() -> int:
     r = await counters.find_one_and_update(
         {"_id": "deal"}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER

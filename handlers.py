@@ -2,7 +2,14 @@ import asyncio
 import logging
 import re
 from datetime import timedelta
-from html import escape as esc
+from html import escape as _stdlib_esc
+
+
+def esc(s, quote=True) -> str:
+    """Safe HTML escape that never crashes on None or non-string inputs."""
+    if s is None:
+        return ""
+    return _stdlib_esc(str(s), quote=quote)
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -23,8 +30,9 @@ import service
 import settings
 import texts
 import userbot
+import utils
 from utils import (
-    fmt_dt, fmt_duration, get_currency_symbol, parse_amount, parse_tat,
+    fmt_dt, fmt_duration, get_currency_symbol, parse_amount, parse_channel_target, parse_tat,
     parse_username, safe_format, user_mention, utcnow,
 )
 
@@ -253,6 +261,9 @@ async def settings_cmd(update, ctx):
 
 
 async def _show_settings_dashboard(send_or_edit_fn):
+    ad = settings.get_ad()
+    ad_status = "🟢 Active" if ad.get("enabled") and ad.get("text") else "🔴 Disabled"
+
     kb = InlineKeyboardMarkup([
         [
             _btn("📝 Message Templates", "set:templates", BLUE),
@@ -263,14 +274,16 @@ async def _show_settings_dashboard(send_or_edit_fn):
             _btn("🪙 Crypto Wallets (25+)", "set:crypto_page:0", GREEN),
         ],
         [
-            _btn("🏷️ GC Name Style", "set:gcstyle", BLUE),
+            _btn("🎨 GC Appearance", "set:gc_appearance", BLUE),
             _btn("💰 MM Fee", "set:fee", GREEN),
         ],
         [
+            _btn("📢 Sponsored Ad", "ad:manage", BLUE),
             _btn("❌ Close Dashboard", "set:close", RED),
         ],
     ])
 
+    has_photo = "✅ Configured" if settings.get("gc_photo_file_id") else "❌ Not set"
     text = (
         f"{emojis.EMOJI_SETTINGS} <b>@{config.MM_USERNAME} Admin Dashboard</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -279,11 +292,13 @@ async def _show_settings_dashboard(send_or_edit_fn):
         f"• <b>Vouch Channel:</b> {settings.get('vouch_channel_url', 'Not set')}\n"
         f"• <b>UPI ID:</b> <code>{settings.get('upi_id', 'Not set')}</code>\n"
         f"• <b>Default MM Fee:</b> <code>{settings.get('default_fee', '50 INR')}</code>\n"
+        f"• <b>GC Profile Photo:</b> {has_photo}\n"
+        f"• <b>Sponsored Ad:</b> {ad_status}\n"
         f"• <b>Active Templates:</b> {len(settings.DEFAULT_TEMPLATES)} customizable\n"
         f"• <b>Configured Cryptos:</b> {len(settings.get('crypto_wallets', {}))} of {len(settings.CRYPTO_NETWORKS)}\n\n"
         "Tap any button below to manage:"
     )
-    await send_or_edit_fn(text, reply_markup=kb, parse_mode=HTML, link_preview_options=NO_PREVIEW)
+    await send_or_edit_fn(text, reply_markup=kb, parse_mode=HTML, link_preview_options=NO_PREVIEW, _no_ad=True)
 
 
 async def settings_callback(update, ctx):
@@ -451,12 +466,91 @@ async def settings_callback(update, ctx):
         )
         await q.edit_message_text(t, reply_markup=kb, parse_mode=HTML)
 
+    elif action == "gc_appearance":
+        await q.answer()
+        has_photo = "✅ Configured" if settings.get("gc_photo_file_id") else "❌ Not configured"
+        tmpl = settings.get("gc_name_template", settings.GC_NAME_PRESETS[0])
+        kb = InlineKeyboardMarkup([
+            [_btn("🏷️ Configure GC Name Style", "set:gcstyle", BLUE)],
+            [_btn("🖼️ Configure GC Profile Photo", "set:gc_photo_menu", GREEN)],
+            [_btn("⬅️ Back to Settings", "set:main", GREEN)],
+        ])
+        t = (
+            "🎨 <b>Group Chat Appearance</b>\n\n"
+            f"• <b>GC Name Format:</b> <code>{esc(tmpl)}</code>\n"
+            f"• <b>GC Profile Photo:</b> {has_photo}\n\n"
+            "Select an option to configure:"
+        )
+        await q.edit_message_text(t, reply_markup=kb, parse_mode=HTML)
+
+    elif action == "gc_photo_menu":
+        await q.answer()
+        photo_id = settings.get("gc_photo_file_id")
+        btns = []
+        if photo_id:
+            btns.append([
+                _btn("👁️ Preview Photo", "set:gc_photo_prev", BLUE),
+                _btn("🔄 Replace Photo", "set:gc_photo_upload", GREEN),
+            ])
+            btns.append([_btn("🗑️ Remove Photo", "set:gc_photo_remove", RED)])
+            status_text = "✅ <b>Configured</b>\nThis photo is automatically applied to all newly created deal groups."
+        else:
+            btns.append([_btn("📤 Upload Photo", "set:gc_photo_upload", GREEN)])
+            status_text = "❌ <b>Not configured</b>\nNo photo is currently applied to newly created deal groups."
+        btns.append([_btn("⬅️ Back to GC Appearance", "set:gc_appearance", BLUE)])
+        t = (
+            "🖼️ <b>GC Profile Photo Settings</b>\n\n"
+            f"Status: {status_text}\n\n"
+            "Choose an action below:"
+        )
+        await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML)
+
+    elif action == "gc_photo_prev":
+        await q.answer()
+        photo_id = settings.get("gc_photo_file_id")
+        if not photo_id:
+            await q.answer("No photo configured.", show_alert=True)
+            return
+        try:
+            await ctx.bot.send_photo(
+                chat_id=user.id,
+                photo=photo_id,
+                caption="🖼️ <b>Current GC Profile Photo</b>\nThis photo is automatically applied to all newly created deal groups.",
+                parse_mode=HTML,
+            )
+        except Exception as e:
+            await q.answer(f"Could not load photo preview: {e}", show_alert=True)
+
+    elif action == "gc_photo_upload":
+        await q.answer()
+        _admin_sessions[user.id] = {"action": "set_gc_photo"}
+        await q.message.reply_text(
+            "📸 <b>Upload GC Profile Photo</b>\n\n"
+            "Please send the photo you want to use as the group profile picture for all newly created deal groups.\n\n"
+            "Send /cancel to abort.",
+            parse_mode=HTML,
+        )
+
+    elif action == "gc_photo_remove":
+        await settings.set_setting("gc_photo_file_id", None)
+        await q.answer("GC Profile Photo removed!", show_alert=True)
+        kb = InlineKeyboardMarkup([
+            [_btn("📤 Upload Photo", "set:gc_photo_upload", GREEN)],
+            [_btn("⬅️ Back to GC Appearance", "set:gc_appearance", BLUE)],
+        ])
+        t = (
+            "🖼️ <b>GC Profile Photo Settings</b>\n\n"
+            "Status: ❌ <b>Not configured</b> (Removed)\n\n"
+            "Choose an action below:"
+        )
+        await q.edit_message_text(t, reply_markup=kb, parse_mode=HTML)
+
     elif action == "gcstyle":
         await q.answer()
         btns = []
         for i, preset in enumerate(settings.GC_NAME_PRESETS):
             btns.append([_btn(f"Preset {i+1}: {preset}", f"set:gc_pick:{i}", BLUE)])
-        btns.append([_btn("⬅️ Back to Settings", "set:main", GREEN)])
+        btns.append([_btn("⬅️ Back to GC Appearance", "set:gc_appearance", GREEN)])
         t = (
             "🏷️ <b>Deal Group Chat Name Template</b>\n\n"
             f"Current Format: <code>{esc(settings.get('gc_name_template'))}</code>\n\n"
@@ -466,7 +560,19 @@ async def settings_callback(update, ctx):
 
     elif action == "gc_pick":
         idx = int(parts[2])
-        await settings.set_setting("gc_name_template", settings.GC_NAME_PRESETS[idx])
+        preset = settings.GC_NAME_PRESETS[idx]
+        if "{startno}" in preset:
+            await q.answer()
+            _admin_sessions[user.id] = {"action": "set_gc_start_num", "preset_idx": idx}
+            await q.message.reply_text(
+                "🔢 <b>Enter Starting Deal Number</b>\n\n"
+                "Enter the positive integer starting deal number for your GC naming sequence (e.g. <code>121</code>):\n\n"
+                "Send /cancel to abort.",
+                parse_mode=HTML,
+            )
+            return
+
+        await settings.set_setting("gc_name_template", preset)
         await q.answer("GC Naming Template Updated!", show_alert=True)
         await _show_settings_dashboard(q.edit_message_text)
 
@@ -537,6 +643,133 @@ async def settings_callback(update, ctx):
             f"✏️ Please send the new value for <b>{field_key}</b>:",
             parse_mode=HTML,
         )
+
+
+# ------------------------------------------------------------------ /ad Advertisement Manager
+async def ad_cmd(update, ctx):
+    user = update.effective_user
+    if not _is_mm(user.id, user.username):
+        await update.message.reply_text("⚠️ This command is reserved for the middleman.", _no_ad=True)
+        return
+
+    ad = settings.get_ad()
+    is_active = ad.get("enabled") and bool(ad.get("text"))
+    status_str = "🟢 <b>Active</b>" if is_active else "🔴 <b>Disabled</b>"
+    current_ad_txt = esc(ad.get("text", ""))
+
+    content = (
+        f"📢 <b>Advertisement Footer Manager</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Status:</b> {status_str}\n"
+    )
+    if ad.get("text"):
+        content += f"• <b>Current Ad:</b>\n— \"<code>{current_ad_txt}</code>\"\n\n"
+    else:
+        content += "• <b>Current Ad:</b> <i>None configured</i>\n\n"
+
+    content += (
+        "When active, your ad is automatically appended as a footer to outgoing bot messages.\n"
+        "Format: <code>— \"Your Ad Text\"</code>"
+    )
+
+    btns = [
+        [_btn("✏️ Set / Replace Ad", "ad:set", BLUE)],
+    ]
+    if ad.get("text"):
+        if is_active:
+            btns.append([_btn("🔴 Disable Ad", "ad:disable", RED), _btn("👁 Preview Ad", "ad:preview", BLUE)])
+        else:
+            btns.append([_btn("🟢 Enable Ad", "ad:enable", GREEN), _btn("👁 Preview Ad", "ad:preview", BLUE)])
+    else:
+        btns.append([_btn("👁 Preview Sample", "ad:preview", BLUE)])
+
+    await update.message.reply_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML, _no_ad=True)
+
+
+async def ad_callback(update, ctx):
+    q = update.callback_query
+    user = q.from_user
+    if not _is_mm(user.id, user.username):
+        await q.answer("Only the middleman can configure advertisements.", show_alert=True)
+        return
+
+    parts = q.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action in ("manage", "main"):
+        await q.answer()
+        ad = settings.get_ad()
+        is_active = ad.get("enabled") and bool(ad.get("text"))
+        status_str = "🟢 <b>Active</b>" if is_active else "🔴 <b>Disabled</b>"
+        current_ad_txt = esc(ad.get("text", ""))
+        content = (
+            f"📢 <b>Advertisement Footer Manager</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Status:</b> {status_str}\n"
+        )
+        if ad.get("text"):
+            content += f"• <b>Current Ad:</b>\n— \"<code>{current_ad_txt}</code>\"\n\n"
+        else:
+            content += "• <b>Current Ad:</b> <i>None configured</i>\n\n"
+
+        content += (
+            "When active, your ad is automatically appended as a footer to outgoing bot messages.\n"
+            "Format: <code>— \"Your Ad Text\"</code>"
+        )
+        btns = [
+            [_btn("✏️ Set / Replace Ad", "ad:set", BLUE)],
+        ]
+        if ad.get("text"):
+            if is_active:
+                btns.append([_btn("🔴 Disable Ad", "ad:disable", RED), _btn("👁 Preview Ad", "ad:preview", BLUE)])
+            else:
+                btns.append([_btn("🟢 Enable Ad", "ad:enable", GREEN), _btn("👁 Preview Ad", "ad:preview", BLUE)])
+        else:
+            btns.append([_btn("👁 Preview Sample", "ad:preview", BLUE)])
+        btns.append([_btn("⬅️ Back to Settings", "set:main", GREEN)])
+
+        await q.edit_message_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML, _no_ad=True)
+        return
+
+    elif action == "set":
+        await q.answer()
+        _admin_sessions[user.id] = {"action": "set_ad"}
+        await q.message.reply_text(
+            "📢 <b>Set Advertisement Footer</b>\n\n"
+            "Send the exact ad text you would like to display. Example:\n"
+            "<code>🎰 @Rainbetcom #1 Non-KYC Crypto Casino & Sportsbook</code>\n\n"
+            "<i>Telegram custom emojis and formatting are fully supported.</i>\n"
+            "Send <code>/cancel</code> to abort.",
+            parse_mode=HTML,
+            _no_ad=True,
+        )
+
+    elif action == "preview":
+        await q.answer()
+        ad = settings.get_ad()
+        ad_txt = ad.get("text") or "🎰 @Rainbetcom #1 Non-KYC Crypto Casino & Sportsbook"
+        await q.message.reply_text(
+            f"👁 <b>Advertisement Preview:</b>\n\n"
+            f"This is a sample bot notification / deal message.\n\n"
+            f"— \"{ad_txt}\"",
+            parse_mode=HTML,
+            _no_ad=True,
+        )
+
+    elif action == "disable":
+        ad = settings.get_ad()
+        await settings.set_ad(ad.get("text", ""), enabled=False)
+        await q.answer("Ad disabled.")
+        await q.message.reply_text("🔴 Advertisement footer has been disabled.", _no_ad=True)
+
+    elif action == "enable":
+        ad = settings.get_ad()
+        if not ad.get("text"):
+            await q.answer("No ad configured. Tap Set / Replace first.", show_alert=True)
+            return
+        await settings.set_ad(ad.get("text", ""), enabled=True)
+        await q.answer("Ad enabled!")
+        await q.message.reply_text(f"🟢 Advertisement footer is now active:\n— \"{esc(ad['text'])}\"", parse_mode=HTML, _no_ad=True)
 
 
 # ------------------------------------------------------------------ /stats
@@ -1161,9 +1394,10 @@ async def mm_dm_cmd(update, ctx):
     user = update.effective_user
     deal_no = await db.next_deal_no()
     label = f"#{config.DEAL_ID_PREFIX}{deal_no}"
-    title = settings.render_gc_title(label, "Buyer", "Seller")
+    title = settings.render_gc_title(label, "Buyer", "Seller", deal_no=deal_no)
 
     info = await userbot.create_deal_group(title, ctx.bot.username)
+    await service.apply_gc_photo(ctx.bot, info.chat_id)
     deal = {
         "deal_no": deal_no,
         "status": "instant_role_selection",
@@ -1331,7 +1565,7 @@ async def buyer_confirm_deal_cb(update, ctx):
     await q.answer("Deal confirmed!")
     await db.update_deal(deal["_id"], {"status": "buyer_confirmed", "confirmed_at": utcnow()})
 
-    buyer_tag = f"@{esc(deal.get('buyer_username', 'Buyer'))}"
+    buyer_tag = f"@{esc(deal.get('buyer_username') or 'Buyer')}"
     chat_id = deal.get("group_chat_id")
 
     # Update Confirm button to indicate buyer confirmation
@@ -1394,30 +1628,43 @@ async def mm_proceed_payment_cb(update, ctx):
     except Exception:
         pass
 
-    buyer_tag = f"@{esc(deal.get('buyer_username', 'Buyer'))}"
-
-    # Message 1: Proceeding to payment...
-    await q.message.reply_text(texts.proceeding_to_payment_text(), parse_mode=HTML)
-    await asyncio.sleep(0.5)
-
-    # Message 2: Payment details (UPI or Crypto)
     fee = deal.get("custom_fee") or settings.get("default_fee", "50 INR")
     amt = str(deal.get("amount", "0"))
-    curr = str(deal.get("currency", "INR"))
-    net = str(deal.get("payment_network", "UPI")).lower()
+    curr = str(deal.get("currency", "INR")).upper()
+    net = str(deal.get("payment_network", "UPI")).upper()
 
-    if "crypto" in net or "crypto" in curr.lower() or curr.upper() in ("USDT", "BTC", "ETH", "SOL", "TON"):
-        kb = _build_crypto_menu(deal_no, page=0)
-        await q.message.reply_text(texts.payment_details_crypto_prompt(amt, curr, fee), reply_markup=kb, parse_mode=HTML)
+    is_crypto = (
+        curr in ("USDT", "BTC", "ETH", "SOL", "TON", "CRYPTO", "LTC", "TRX", "BNB", "XRP", "DOGE")
+        or "CRYPTO" in curr
+        or ("CRYPTO" in net and curr != "INR")
+    )
+
+    if is_crypto:
+        # Step 1: Crypto payment network selection (no premature buyer confirmation button)
+        kb = _build_crypto_menu(deal_no, curr, page=0)
+        await q.message.reply_text(
+            texts.payment_details_crypto_prompt(amt, curr, fee),
+            reply_markup=kb,
+            parse_mode=HTML,
+        )
     else:
+        # Step 2: Consolidated INR payment card, followed by confirmation button after delay
         upi_id = settings.get("upi_id", config.DEFAULT_UPI_ID) or f"Contact @{config.MM_USERNAME} for UPI ID"
-        await q.message.reply_text(texts.payment_details_upi(amt, curr, fee, upi_id), parse_mode=HTML)
-
-    await asyncio.sleep(0.5)
-
-    # Message 3: Buyer confirm payment sent button
-    buyer_kb = _kb(_btn("I have sent payment", f"inst:buyer_paid:{deal_no}", GREEN, icon=emojis.get_custom_id("SUCCESS")))
-    await q.message.reply_text(texts.payment_verification_text(buyer_tag), reply_markup=buyer_kb, parse_mode=HTML)
+        sent = await q.message.reply_text(
+            texts.payment_details_upi(amt, curr, fee, upi_id),
+            parse_mode=HTML,
+        )
+        await asyncio.sleep(3)
+        buyer_kb = _kb(_btn("✅ I've sent the payment", f"inst:buyer_paid:{deal_no}", GREEN, icon=emojis.get_custom_id("SUCCESS")))
+        try:
+            await sent.edit_reply_markup(reply_markup=buyer_kb)
+        except Exception:
+            buyer_tag = f"@{esc(deal.get('buyer_username') or 'Buyer')}"
+            await q.message.reply_text(
+                texts.payment_verification_text(buyer_tag),
+                reply_markup=buyer_kb,
+                parse_mode=HTML,
+            )
 
 
 async def noop_cb(update, ctx):
@@ -1425,13 +1672,34 @@ async def noop_cb(update, ctx):
         await update.callback_query.answer()
 
 
-def _build_crypto_menu(deal_no: int, page: int = 0) -> InlineKeyboardMarkup:
+def _build_crypto_menu(deal_no: int, currency: str = "Crypto", page: int = 0) -> InlineKeyboardMarkup:
     all_coins = list(settings.CRYPTO_NETWORKS.items())
-    page_size = 6
-    total_pages = (len(all_coins) + page_size - 1) // page_size
-    page = max(0, min(page, total_pages - 1))
+    curr_upper = (currency or "CRYPTO").upper()
 
-    current_slice = all_coins[page * page_size : (page + 1) * page_size]
+    if curr_upper == "USDT":
+        filtered = [item for item in all_coins if item[0].startswith("usdt_")]
+    elif curr_upper in ("BTC", "BITCOIN"):
+        filtered = [item for item in all_coins if item[0] == "btc"]
+    elif curr_upper in ("ETH", "ETHEREUM"):
+        filtered = [item for item in all_coins if item[0] in ("eth", "base", "arb")]
+    elif curr_upper in ("SOL", "SOLANA"):
+        filtered = [item for item in all_coins if item[0] in ("sol", "usdt_sol")]
+    elif curr_upper in ("TON", "TONCOIN"):
+        filtered = [item for item in all_coins if item[0] in ("ton", "usdt_ton")]
+    elif curr_upper in ("LTC", "TRX", "BNB", "XRP", "DOGE", "POL", "MATIC", "AVAX", "XMR", "ADA", "DOT", "NEAR", "BCH", "SUI", "APT", "USDC"):
+        k_key = curr_upper.lower()
+        filtered = [item for item in all_coins if item[0] == k_key or item[1].get("symbol") == curr_upper]
+    else:
+        filtered = all_coins
+
+    if not filtered:
+        filtered = all_coins
+
+    page_size = 6
+    total_pages = (len(filtered) + page_size - 1) // page_size
+    page = max(0, min(page, max(0, total_pages - 1)))
+
+    current_slice = filtered[page * page_size : (page + 1) * page_size]
     btns = []
     for key, info in current_slice:
         btns.append([_btn(f"🪙 {info['symbol']} ({info['network']})", f"inst:crypto_pick:{deal_no}:{key}", BLUE)])
@@ -1452,27 +1720,50 @@ async def instant_crypto_callback(update, ctx):
     parts = q.data.split(":")
     action = parts[1]
     deal_no = int(parts[2])
+    deal = await db.get_deal_by_no(deal_no)
+    curr = deal.get("currency", "Crypto") if deal else "Crypto"
 
     if action == "crypto_page":
         page = int(parts[3])
         await q.answer()
-        await q.edit_reply_markup(_build_crypto_menu(deal_no, page))
+        await q.edit_reply_markup(_build_crypto_menu(deal_no, curr, page))
 
     elif action == "crypto_pick":
         coin_key = parts[3]
         info = settings.CRYPTO_NETWORKS.get(coin_key, {})
-        addr = settings.get_crypto_wallet(coin_key) or f"Address not set in /settings. Contact @{config.MM_USERNAME}"
+        addr = settings.get_crypto_wallet(coin_key)
+
+        if not addr:
+            await q.answer(f"⚠️ No wallet configured for {info.get('name', coin_key)}. Contact @{config.MM_USERNAME}", show_alert=True)
+            return
+
         await q.answer()
 
-        t = (
-            f"🪙 <b>Selected Crypto:</b> {info.get('name')} ({info.get('symbol')})\n"
-            f"🌐 <b>Network:</b> <code>{info.get('network')}</code>\n\n"
-            f"📥 <b>Deposit Address:</b>\n<code>{esc(addr)}</code>\n\n"
-            "⚠️ <i>Send Payment to only this Network.</i>\n"
-            "📸 <i>Send Transaction Hash / Screenshot right after paying.</i>"
+        t = texts.payment_details_crypto_address(
+            coin_name=info.get("name", coin_key),
+            symbol=info.get("symbol", coin_key),
+            network=info.get("network", "N/A"),
+            address=addr,
         )
-        kb = _kb(_btn("⬅️ Select another crypto", f"inst:crypto_page:{deal_no}:0", BLUE))
-        await q.message.reply_text(t, reply_markup=kb, parse_mode=HTML)
+
+        try:
+            await q.edit_message_text(t, parse_mode=HTML, reply_markup=None)
+        except Exception:
+            pass
+
+        # 3-second delay before displaying confirmation button on deposit message
+        await asyncio.sleep(3)
+
+        buyer_kb = _kb(_btn("✅ I've sent the payment", f"inst:buyer_paid:{deal_no}", GREEN, icon=emojis.get_custom_id("SUCCESS")))
+        try:
+            await q.message.edit_reply_markup(reply_markup=buyer_kb)
+        except Exception:
+            buyer_tag = f"@{esc(deal.get('buyer_username') or 'Buyer')}" if deal else "Buyer"
+            await q.message.reply_text(
+                texts.payment_verification_text(buyer_tag),
+                reply_markup=buyer_kb,
+                parse_mode=HTML,
+            )
 
 
 async def payment_sent_cb(update, ctx):
@@ -1485,6 +1776,10 @@ async def payment_sent_cb(update, ctx):
         await q.answer()
         return
 
+    if deal.get("buyer_payment_confirmed"):
+        await q.answer("Payment confirmation has already been recorded.", show_alert=True)
+        return
+
     if action == "buyer_paid":
         # Buyer confirms they sent payment
         if q.from_user.id != deal.get("buyer_id") and not _is_mm(q.from_user.id):
@@ -1493,7 +1788,7 @@ async def payment_sent_cb(update, ctx):
         await q.answer("Payment confirmation noted!")
         await db.update_deal(deal["_id"], {"buyer_payment_confirmed": True, "buyer_paid_at": utcnow()})
 
-        buyer_tag = f"@{esc(deal.get('buyer_username', 'Buyer'))}"
+        buyer_tag = f"@{esc(deal.get('buyer_username') or 'Buyer')}"
         await q.message.reply_text(
             f"{emojis.EMOJI_SUCCESS} {buyer_tag} confirms payment has been sent.\n\n"
             f"{emojis.EMOJI_HOURGLASS} Waiting for middleman to verify receipt.",
@@ -1513,7 +1808,7 @@ async def payment_sent_cb(update, ctx):
     await q.answer("Payment confirmation noted!")
     await db.update_deal(deal["_id"], {"buyer_payment_confirmed": True, "buyer_paid_at": utcnow()})
 
-    buyer_tag = f"@{esc(deal.get('buyer_username', 'Buyer'))}"
+    buyer_tag = f"@{esc(deal.get('buyer_username') or 'Buyer')}"
     await q.message.reply_text(
         f"{emojis.EMOJI_SUCCESS} {buyer_tag} confirms payment has been sent.\n\n"
         f"{emojis.EMOJI_HOURGLASS} Waiting for middleman to verify receipt.",
@@ -1863,13 +2158,91 @@ async def complete_cmd(update, ctx):
     await db.update_deal(deal["_id"], {"status": "completed", "completed_at": utcnow()})
     vouch_text = settings.render_vouch(deal)
 
-    await msg.reply_text(
+    vouch_msg = await msg.reply_text(
         f"🎉 <b>Deal Completed Successfully!</b>\n\n"
         f"Funds have been released. Thank you for using {texts.MM} Escrow Service!\n\n"
         f"<b>Please drop a vouch in our channel:</b>\n\n{vouch_text}",
         parse_mode=HTML,
         link_preview_options=NO_PREVIEW,
     )
+
+    # Prompt Middleman with confirmation button to forward vouch to vouches channel
+    vouch_target = parse_channel_target(settings.get("vouch_channel_url", config.VOUCH_CHANNEL_URL))
+    fwd_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📢 Forward to Vouches Channel", callback_data=f"vouch:fwd:{deal['deal_no']}:{vouch_msg.message_id}"),
+            InlineKeyboardButton("❌ Don't Forward", callback_data=f"vouch:no:{deal['deal_no']}"),
+        ]
+    ])
+    await msg.reply_text(
+        f"📢 <b>Forward Vouch to Channel?</b>\n\n"
+        f"Destination: <code>{esc(str(vouch_target))}</code>\n"
+        f"<i>(Only middleman @{config.MM_USERNAME} can confirm)</i>",
+        reply_markup=fwd_kb,
+        parse_mode=HTML,
+    )
+
+
+async def vouch_callback(update, ctx):
+    """Handles vouch forwarding confirmation (visible/actionable by middleman only)."""
+    q = update.callback_query
+    user = q.from_user
+    if not _is_mm(user.id, user.username):
+        await q.answer(f"⚠️ Visible only to middleman: only @{config.MM_USERNAME} can confirm forwarding.", show_alert=True)
+        return
+
+    parts = q.data.split(":")
+    action = parts[1]
+    deal_no = int(parts[2])
+
+    if action == "no":
+        await q.answer("Vouch forwarding dismissed.")
+        await q.edit_message_text("❌ <b>Vouch forwarding dismissed.</b>", parse_mode=HTML)
+        return
+
+    deal = await db.get_deal_by_no(deal_no)
+    target_channel = parse_channel_target(settings.get("vouch_channel_url", config.VOUCH_CHANNEL_URL))
+    if not target_channel:
+        await q.answer("Vouch channel is not configured in settings.", show_alert=True)
+        return
+
+    await q.answer("Forwarding vouch...")
+    if action == "fwd_msg":
+        msg_id = int(parts[3])
+        chat_id = deal.get("group_chat_id") if deal else q.message.chat_id
+        try:
+            await ctx.bot.forward_message(chat_id=target_channel, from_chat_id=chat_id, message_id=msg_id)
+            await q.edit_message_text(f"✅ <b>Vouch forwarded to {esc(str(target_channel))}!</b>", parse_mode=HTML)
+            if deal:
+                await db.update_deal(deal["_id"], {"vouch_forwarded": True, "vouch_forwarded_at": utcnow()})
+        except Exception as e:
+            log.warning("Could not forward vouch: %s", e)
+            try:
+                vouch_text = settings.render_vouch(deal) if deal else "Vouch received!"
+                await ctx.bot.send_message(chat_id=target_channel, text=vouch_text, parse_mode=HTML, link_preview_options=NO_PREVIEW)
+                await q.edit_message_text(f"✅ <b>Vouch posted to {esc(str(target_channel))}!</b>", parse_mode=HTML)
+                if deal:
+                    await db.update_deal(deal["_id"], {"vouch_forwarded": True, "vouch_forwarded_at": utcnow()})
+            except Exception as e2:
+                await q.edit_message_text(
+                    f"⚠️ <b>Could not forward to {esc(str(target_channel))}:</b> {esc(str(e2))}\n\n"
+                    f"Please ensure @{ctx.bot.username} is added as an <b>Admin</b> in the channel with <b>Post Messages</b> permission.",
+                    parse_mode=HTML,
+                )
+    elif action == "fwd":
+        vouch_text = settings.render_vouch(deal)
+        try:
+            await ctx.bot.send_message(chat_id=target_channel, text=vouch_text, parse_mode=HTML, link_preview_options=NO_PREVIEW)
+            await q.edit_message_text(f"✅ <b>Vouch successfully posted to {esc(str(target_channel))}!</b>", parse_mode=HTML)
+            if deal:
+                await db.update_deal(deal["_id"], {"vouch_forwarded": True, "vouch_forwarded_at": utcnow()})
+        except Exception as e:
+            log.warning("Could not post vouch: %s", e)
+            await q.edit_message_text(
+                f"⚠️ <b>Could not post to {esc(str(target_channel))}:</b> {esc(str(e))}\n\n"
+                f"Please ensure @{ctx.bot.username} is added as an <b>Admin</b> in the channel with <b>Post Messages</b> permission.",
+                parse_mode=HTML,
+            )
 
 
 # ------------------------------------------------------------------ Chat Member Admission Restrictions
@@ -1888,17 +2261,22 @@ async def on_chat_member_update(update, ctx):
     if not new_user or new_user.is_bot:
         return
 
+    # Only process actual join events (joining group from left/kicked/none)
+    new_status = getattr(cm.new_chat_member, "status", None)
+    old_status = getattr(cm.old_chat_member, "status", None) if cm.old_chat_member else None
+    joined_statuses = ("member", "administrator", "creator")
+    if new_status not in joined_statuses:
+        return  # user left, was kicked, or restricted - do not send welcome or admit
+    if old_status in joined_statuses:
+        return  # user was already in the group (e.g. role/title change)
+
     # Allow Middleman
     if _is_mm(new_user.id, new_user.username):
         return
 
-    # If deal is closed, kick new entrant
+    # If deal is closed, do NOT kick - mute only
     if deal.get("status") == "closed":
-        try:
-            await ctx.bot.ban_chat_member(chat.id, new_user.id)
-            await ctx.bot.unban_chat_member(chat.id, new_user.id)
-        except Exception:
-            pass
+        await service.mute_deal_participants(ctx.bot, chat.id, new_user.id)
         return
 
     buyer_id = deal.get("buyer_id")
@@ -1907,17 +2285,15 @@ async def on_chat_member_update(update, ctx):
     # If both participants are already set
     if buyer_id and seller_id:
         if new_user.id != buyer_id and new_user.id != seller_id:
-            try:
-                await ctx.bot.ban_chat_member(chat.id, new_user.id)
-                await ctx.bot.unban_chat_member(chat.id, new_user.id)
-                await safe_send(
-                    ctx.bot,
-                    chat.id,
-                    f"⚠️ Unauthorized user {user_mention(new_user.id, new_user.username, new_user.first_name)} removed. "
-                    "Only the designated Buyer and Seller are permitted.",
-                )
-            except Exception as e:
-                log.warning("Could not kick unauthorized participant: %s", e)
+            # Both roles filled: revoke invite link and mute extra joiner (approval required)
+            await service.revoke_deal_invite(ctx.bot, deal)
+            await service.mute_deal_participants(ctx.bot, chat.id, new_user.id)
+            await safe_send(
+                ctx.bot,
+                chat.id,
+                f"⚠️ {user_mention(new_user.id, new_user.username, new_user.first_name)} joined, but Buyer & Seller roles are already confirmed.\n"
+                f"Participant has been muted. Approval from Middleman @{config.MM_USERNAME} required to participate.",
+            )
             return
         else:
             # Both participants are in, revoke invitation link
@@ -1991,12 +2367,39 @@ async def on_group_message(update, ctx):
             })
 
             fresh = await db.get_deal_by_no(deal_no)
-            buyer_tag = f"@{esc(fresh.get('buyer_username', 'Buyer'))}"
-            seller_tag = f"@{esc(fresh.get('seller_username', 'Seller'))}"
+            buyer_tag = f"@{esc(fresh.get('buyer_username') or 'Buyer')}"
+            seller_tag = f"@{esc(fresh.get('seller_username') or 'Seller')}"
 
             summary = texts.instant_deal_summary(fresh, buyer_tag, seller_tag)
             kb = _kb(_btn("Confirm Deal", f"inst:confirm:{deal_no}", GREEN, icon=emojis.get_custom_id("SUCCESS")))
             await msg.reply_text(summary, reply_markup=kb, parse_mode=HTML)
+            return
+
+    # Vouch detection in deal group (buyer/seller drops a vouch)
+    lower = text.lower()
+    is_vouch = (
+        "vouch" in lower
+        or "+rep" in lower
+        or "vouched" in lower
+        or ("legit" in lower and ("mm" in lower or config.MM_USERNAME.lower() in lower))
+        or (f"@{config.MM_USERNAME.lower()}" in lower and any(w in lower for w in ("deal", "completed", "thanks", "done", "trusted")))
+    )
+    if is_vouch and status in ("completed", "active", "closed", "deal_confirmed", "payment_pending"):
+        vouch_target = parse_channel_target(settings.get("vouch_channel_url", config.VOUCH_CHANNEL_URL))
+        vouch_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📢 Forward to Vouches Channel", callback_data=f"vouch:fwd_msg:{deal['deal_no']}:{msg.message_id}"),
+                InlineKeyboardButton("❌ Don't Forward", callback_data=f"vouch:no:{deal['deal_no']}"),
+            ]
+        ])
+        await msg.reply_text(
+            f"⭐ <b>Vouch Detected!</b>\n\n"
+            f"Forward this vouch message to <code>{esc(str(vouch_target))}</code>?\n"
+            f"<i>(Only middleman @{config.MM_USERNAME} can confirm)</i>",
+            reply_markup=vouch_kb,
+            parse_mode=HTML,
+        )
+        return
 
 
 async def on_private_message(update, ctx):
@@ -2010,56 +2413,115 @@ async def on_private_message(update, ctx):
     if msg.forward_origin:
         return await _forwarded(msg)
 
-    # 1. Admin session (setting a field, crypto address, or template)
+    # 1. Admin session (setting a field, crypto address, template, GC photo, or start number)
     admin_sess = _admin_sessions.get(user.id)
-    if admin_sess and _is_mm(user.id, user.username) and msg.text:
+    if admin_sess and _is_mm(user.id, user.username):
         action = admin_sess["action"]
-        val = msg.text.strip()
 
-        if val == "/cancel":
+        if msg.text and msg.text.strip() == "/cancel":
             del _admin_sessions[user.id]
             await msg.reply_text("❌ Action cancelled.")
             return
 
-        if action == "set_template":
-            tmpl_key = admin_sess["tmpl_key"]
-            # Validate template safely
-            try:
-                safe_format(val, deal_id="1", buyer="@b", seller="@s", currency="$", amount="100", tat="24h", deadline="now", mm=config.MM_USERNAME)
-            except Exception as e:
-                await msg.reply_text(f"❌ Invalid template format: {e}. Please try again or send /cancel.")
+        # Handle GC Profile Photo Upload (photo message)
+        if action == "set_gc_photo":
+            if msg.photo:
+                photo_file_id = msg.photo[-1].file_id
+                await settings.set_setting("gc_photo_file_id", photo_file_id)
+                del _admin_sessions[user.id]
+                await msg.reply_text(
+                    "✅ <b>GC Profile Photo Configured!</b>\n\n"
+                    "This photo will now be automatically set on every newly created deal group.",
+                    parse_mode=HTML,
+                )
+                return
+            else:
+                await msg.reply_text("⚠️ Please send an image photo (or /cancel to abort).")
                 return
 
-            await settings.set_template(tmpl_key, val)
+        # Handle GC starting number input (text message)
+        if action == "set_gc_start_num":
+            if not msg.text:
+                await msg.reply_text("Please enter a positive integer number (e.g. 121), or /cancel to abort.")
+                return
+            val = msg.text.strip()
+            if not val.isdigit() or int(val) <= 0:
+                await msg.reply_text("❌ Invalid number. Please enter a positive integer (e.g. <code>121</code>):", parse_mode=HTML)
+                return
+            start_num = int(val)
+            preset_idx = admin_sess["preset_idx"]
+            curr_counter = await db.get_current_deal_no()
+            baseline = curr_counter + 1
+            await settings.set_setting("gc_start_num", start_num)
+            await settings.set_setting("gc_baseline_deal_no", baseline)
+            await settings.set_setting("gc_name_template", settings.GC_NAME_PRESETS[preset_idx])
             del _admin_sessions[user.id]
-            label = settings.TEMPLATE_LABELS.get(tmpl_key, tmpl_key)
-            await msg.reply_text(f"✅ Template <b>{label}</b> updated successfully!", parse_mode=HTML)
+            await msg.reply_text(
+                f"✅ <b>Sequential GC Naming Configured!</b>\n\n"
+                f"• Preset: <code>{esc(settings.GC_NAME_PRESETS[preset_idx])}</code>\n"
+                f"• Starting Deal Number: <b>#{start_num}</b> (Baseline counter: {baseline})\n\n"
+                f"The next deal group will be named: <code>Deal #{start_num} | @{config.MM_USERNAME}</code>.",
+                parse_mode=HTML,
+            )
             return
 
-        elif action == "set_crypto":
-            coin_key = admin_sess["coin_key"]
-            await settings.set_crypto_wallet(coin_key, val)
-            del _admin_sessions[user.id]
-            info = settings.CRYPTO_NETWORKS.get(coin_key, {})
-            await msg.reply_text(f"✅ Wallet address updated for <b>{info.get('name')}</b>!", parse_mode=HTML)
-            return
+        if msg.text:
+            val = msg.text.strip()
 
-        elif action == "set_field":
-            field = admin_sess["field"]
-            await settings.set_setting(field, val)
-            del _admin_sessions[user.id]
-            await msg.reply_text(f"✅ Setting <b>{field}</b> updated!", parse_mode=HTML)
-            return
+            if action == "set_template":
+                tmpl_key = admin_sess["tmpl_key"]
+                # Validate template safely
+                try:
+                    safe_format(val, deal_id="1", buyer="@b", seller="@s", currency="$", amount="100", tat="24h", deadline="now", mm=config.MM_USERNAME)
+                except Exception as e:
+                    await msg.reply_text(f"❌ Invalid template format: {e}. Please try again or send /cancel.")
+                    return
 
-        elif action == "livechat_reply":
-            target_uid = admin_sess["target_uid"]
-            del _admin_sessions[user.id]
-            ok = await _relay_reply_to_user(ctx.bot, target_uid, val)
-            if ok:
-                await msg.reply_text(f"✅ Reply delivered to user <code>{target_uid}</code>.", parse_mode=HTML)
-            else:
-                await msg.reply_text(f"❌ Failed to deliver reply to user <code>{target_uid}</code>.", parse_mode=HTML)
-            return
+                await settings.set_template(tmpl_key, val)
+                del _admin_sessions[user.id]
+                label = settings.TEMPLATE_LABELS.get(tmpl_key, tmpl_key)
+                await msg.reply_text(f"✅ Template <b>{label}</b> updated successfully!", parse_mode=HTML)
+                return
+
+            elif action == "set_ad":
+                ad_content = msg.text_html.strip() if hasattr(msg, "text_html") and msg.text_html else val
+                if len(val) > 250:
+                    await msg.reply_text("❌ Ad text is too long (maximum 250 characters). Please send a shorter text, or /cancel:")
+                    return
+                await settings.set_ad(ad_content, enabled=True)
+                del _admin_sessions[user.id]
+                await msg.reply_text(
+                    f"✅ <b>Advertisement Configured & Activated!</b>\n\n"
+                    f"Footer will appear on outgoing messages as:\n— \"{ad_content}\"",
+                    parse_mode=HTML,
+                    _no_ad=True,
+                )
+                return
+
+            elif action == "set_crypto":
+                coin_key = admin_sess["coin_key"]
+                await settings.set_crypto_wallet(coin_key, val)
+                del _admin_sessions[user.id]
+                info = settings.CRYPTO_NETWORKS.get(coin_key, {})
+                await msg.reply_text(f"✅ Wallet address updated for <b>{info.get('name')}</b>!", parse_mode=HTML)
+                return
+
+            elif action == "set_field":
+                field = admin_sess["field"]
+                await settings.set_setting(field, val)
+                del _admin_sessions[user.id]
+                await msg.reply_text(f"✅ Setting <b>{field}</b> updated!", parse_mode=HTML)
+                return
+
+            elif action == "livechat_reply":
+                target_uid = admin_sess["target_uid"]
+                del _admin_sessions[user.id]
+                ok = await _relay_reply_to_user(ctx.bot, target_uid, val)
+                if ok:
+                    await msg.reply_text(f"✅ Reply delivered to user <code>{target_uid}</code>.", parse_mode=HTML)
+                else:
+                    await msg.reply_text(f"❌ Failed to deliver reply to user <code>{target_uid}</code>.", parse_mode=HTML)
+                return
 
     # 2. Middleman replying directly to a livechat message
     if _is_mm(user.id, user.username) and msg.reply_to_message:
