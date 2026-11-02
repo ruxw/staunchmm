@@ -298,7 +298,7 @@ async def _show_settings_dashboard(send_or_edit_fn):
         f"• <b>Configured Cryptos:</b> {len(settings.get('crypto_wallets', {}))} of {len(settings.CRYPTO_NETWORKS)}\n\n"
         "Tap any button below to manage:"
     )
-    await send_or_edit_fn(text, reply_markup=kb, parse_mode=HTML, link_preview_options=NO_PREVIEW, _no_ad=True)
+    await send_or_edit_fn(text, reply_markup=kb, parse_mode=HTML, link_preview_options=NO_PREVIEW)
 
 
 async def settings_callback(update, ctx):
@@ -649,7 +649,7 @@ async def settings_callback(update, ctx):
 async def ad_cmd(update, ctx):
     user = update.effective_user
     if not _is_mm(user.id, user.username):
-        await update.message.reply_text("⚠️ This command is reserved for the middleman.", _no_ad=True)
+        await update.message.reply_text("⚠️ This command is reserved for the middleman.")
         return
 
     ad = settings.get_ad()
@@ -683,7 +683,7 @@ async def ad_cmd(update, ctx):
     else:
         btns.append([_btn("👁 Preview Sample", "ad:preview", BLUE)])
 
-    await update.message.reply_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML, _no_ad=True)
+    await update.message.reply_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML)
 
 
 async def ad_callback(update, ctx):
@@ -728,7 +728,7 @@ async def ad_callback(update, ctx):
             btns.append([_btn("👁 Preview Sample", "ad:preview", BLUE)])
         btns.append([_btn("⬅️ Back to Settings", "set:main", GREEN)])
 
-        await q.edit_message_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML, _no_ad=True)
+        await q.edit_message_text(content, reply_markup=InlineKeyboardMarkup(btns), parse_mode=HTML)
         return
 
     elif action == "set":
@@ -741,7 +741,6 @@ async def ad_callback(update, ctx):
             "<i>Telegram custom emojis and formatting are fully supported.</i>\n"
             "Send <code>/cancel</code> to abort.",
             parse_mode=HTML,
-            _no_ad=True,
         )
 
     elif action == "preview":
@@ -753,14 +752,13 @@ async def ad_callback(update, ctx):
             f"This is a sample bot notification / deal message.\n\n"
             f"— \"{ad_txt}\"",
             parse_mode=HTML,
-            _no_ad=True,
         )
 
     elif action == "disable":
         ad = settings.get_ad()
         await settings.set_ad(ad.get("text", ""), enabled=False)
         await q.answer("Ad disabled.")
-        await q.message.reply_text("🔴 Advertisement footer has been disabled.", _no_ad=True)
+        await q.message.reply_text("🔴 Advertisement footer has been disabled.")
 
     elif action == "enable":
         ad = settings.get_ad()
@@ -769,7 +767,7 @@ async def ad_callback(update, ctx):
             return
         await settings.set_ad(ad.get("text", ""), enabled=True)
         await q.answer("Ad enabled!")
-        await q.message.reply_text(f"🟢 Advertisement footer is now active:\n— \"{esc(ad['text'])}\"", parse_mode=HTML, _no_ad=True)
+        await q.message.reply_text(f"🟢 Advertisement footer is now active:\n— \"{esc(ad['text'])}\"", parse_mode=HTML)
 
 
 # ------------------------------------------------------------------ /stats
@@ -2494,7 +2492,6 @@ async def on_private_message(update, ctx):
                     f"✅ <b>Advertisement Configured & Activated!</b>\n\n"
                     f"Footer will appear on outgoing messages as:\n— \"{ad_content}\"",
                     parse_mode=HTML,
-                    _no_ad=True,
                 )
                 return
 

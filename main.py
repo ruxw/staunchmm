@@ -95,7 +95,8 @@ class EmojiBot(ExtBot):
 
     @staticmethod
     def _fix(kw: dict, key: str):
-        no_ad = kw.pop("_no_ad", False)
+        api_kw = kw.get("api_kwargs") or {}
+        no_ad = kw.pop("_no_ad", False) or api_kw.pop("_no_ad", False)
         t = kw.get(key)
         if not isinstance(t, str) or kw.get("entities") or kw.get("caption_entities"):
             return
@@ -107,7 +108,18 @@ class EmojiBot(ExtBot):
             return
 
         # Centralized advertisement footer injection
-        if not no_ad:
+        skip_ad = no_ad or any(k in t for k in (
+            "Admin Dashboard",
+            "Advertisement Footer",
+            "Advertisement Preview",
+            "Set Advertisement",
+            "Settings dashboard",
+            "Configurable Message Templates",
+            "GC Profile Photo",
+            "Sequential GC Naming",
+        ))
+
+        if not skip_ad:
             try:
                 ad = settings.get_ad()
                 if ad.get("enabled") and ad.get("text"):
